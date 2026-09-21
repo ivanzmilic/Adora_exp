@@ -1,0 +1,96 @@
+\input{adora_preamble}
+\begin{document}
+
+\docheader{Adora --- GPU Forward Synthesis}%
+{As-built notes \quad$\cdot$\quad Ivan Milic \quad$\cdot$\quad 2026-09-19 \quad$\cdot$\quad session summary}
+
+This session took the existing forward synth to the \textbf{GPU}: confirmed the \code{adora-develop}
+JAX is a CUDA build and sees the H100s, ran \file{synth3d.py} on-device \emph{unchanged}, added a
+convenience wrapper, and benchmarked real MURaM cubes. Complements the CPU parallel/memory notes in
+\file{adora\_6\_parallel\_memory.pdf}. Housekeeping: all \code{.tex}/\code{.pdf} summaries moved into
+\file{3dtesting/docs/}.
+
+\subsection*{1. Environment \& GPU readiness --- verified}
+\code{adora-develop}'s \textbf{JAX 0.7.1 is the CUDA12 build} (\code{jax-cuda12-plugin}/\code{-pjrt} +
+bundled \code{nvidia-*-cu12} libs); \code{jax.default\_backend()=="gpu"}. Node has \textbf{3$\times$ NVIDIA
+H100 80\,GB} (driver 550.90.07, CUDA 12.4). \textbf{No code change} was needed: \file{synth3d.py} is pure
+\code{jax.jit}/\code{vmap}, so it compiles to whichever backend is default. Two env vars steer it (set
+\emph{before} \code{import jax}):
+\begin{itemize}
+  \item \code{CUDA\_VISIBLE\_DEVICES=1} --- pick one physical GPU (GPU~0 was busy with another user);
+        inside the process it renumbers to \code{cuda:0}.
+  \item \code{XLA\_PYTHON\_CLIENT\_PREALLOCATE=false} --- stop XLA grabbing $\sim$75\% of the card up
+        front; polite on a shared node.
+\end{itemize}
+\textbf{Note:} \file{synth3d\_mp.py} is the \emph{CPU-only} path (core pinning + per-core JAX processes);
+for GPU you call \code{synth\_cube} on a big batch, not the pool.
+
+\subsection*{2. New wrapper \code{synth\_cube\_map} (mp-style call, GPU)}
+Added to \file{synth3d.py}: a GPU twin of \code{synth\_cube\_mp} with the \emph{same} interface ---
+\code{synth\_cube\_map(waves, dz, cube, linelist=…, adata=None)} where \code{cube} is the dict of the 8
+\code{KEYS}, each \code{(nx,ny,nz)} or \code{(npix,nz)}. It builds \code{adata}, flattens, calls
+\code{synth\_cube}, and restores \code{(nx,ny,4,nwave)}. Unlike the mp version it returns a \textbf{JAX
+array on the device} (composes with \code{grad}/\code{jit}; \code{np.asarray()} to pull to host) and takes
+no pool knobs. \textbf{Caveat:} it runs the \emph{whole} cube in one call --- fine for small maps, but see
+\S3: a real cube must be column-batched (auto-batching is the recommended next step).
+
+\subsection*{3. Where the memory goes on GPU (same lesson, one device)}
+One \code{synth\_cube} call is the triply-nested \code{vmap} (columns$\times$wavelength$\times$depth) fused
+into a single XLA program, so the polarised opacity \code{chi} of shape
+$(\text{cols}\times n_\lambda\times n_z\times4\times4)$ is live at once:
+\[
+\text{bytes}(\code{chi}) \;\approx\; \text{cols}\cdot n_\lambda\cdot n_z\cdot 16\cdot 8 .
+\]
+For the \code{skip=8} cube (36\,864 cols, $n_\lambda{=}201$, $n_z{=}121$) that is $\sim$\textbf{115\,GB} ---
+over one H100. So we \textbf{batch columns} exactly as the mp path tiles them, choosing
+$B=\lfloor \text{budget}/(n_\lambda n_z\cdot128)\rfloor$; an 8\,GB budget gives $B\!\approx\!2560$ columns
+(compiles once on batch~1, reused warm).
+
+\subsection*{4. Benchmarks (GPU~\#1, one idle H100, \code{x64})}
+Reproduced the last mp run (\file{3D\_full\_subdomain} iter 0, \code{muramsub}, 201 waves @ 630.1--630.3\,nm),
+synth on-device, $B{=}2560$:
+\smallskip
+
+\begin{tabular}{@{}l r r r r@{}}
+\hline
+\textbf{run} & \textbf{columns} & \textbf{warm synth} & \textbf{incl.\ compile} & \textbf{cols/s}\\
+\hline
+\code{skip=8} \; $(192^2)$              & 36\,864  & \textbf{3.2\,s}  & 5.6\,s  & 11\,532\\
+quarter \code{skip=1} \; $(768^2)$      & 589\,824 & \textbf{49\,s}   & 52.6\,s & 11\,958\\
+\hline
+\end{tabular}
+\smallskip
+
+Throughput is flat at \textbf{$\sim$11.9k cols/s} ($\sim$0.084\,ms/column; a full 121-layer, 201-$\lambda$
+polarised Stokes synthesis each), i.e.\ \textbf{linear scaling} --- the H100 is saturated and per-batch
+overhead is negligible. One-time JIT $\approx$2.4\,s. \textbf{Correctness:} the \code{skip=8} GPU cube
+matches the CPU-mp reference \file{adora\_synth/synthesized\_cube\_djordje.npy} to \code{max|$\Delta$|=7.5e-12},
+\code{mean=2e-14} --- bit-identical up to fp64 round-off.
+
+\textbf{Extrapolation:} the full $1536^2$ domain ($\sim$2.36M cols) is $\sim$\textbf{3.3\,min} of warm synth.
+\textbf{Loading} the snapshot from disk is $\sim$28\,s cold ($\sim$3\,s once page-cached) --- at full
+resolution the MURaM \textbf{I/O, not the RT, is the emerging bottleneck}.
+
+\subsection*{5. Outputs written} (all under \file{/dat/milic/adora\_synth/})
+\begin{itemize}
+  \item \file{synthesized\_cube\_gpu.npy} --- GPU, \code{skip=8}, $(192,192,4,201)$, 237\,MB.
+  \item \file{synthesized\_cube\_gpu\_quarter\_768x768.npy} --- GPU, quarter full-res,
+        $(768,768,4,201)$, 3.79\,GB.
+  \item mp reference \file{synthesized\_cube\_djordje.npy} left untouched. Axes for all:
+        $(x, y,\ \text{Stokes } I Q U V,\ \lambda)$ on the same 201-point grid.
+\end{itemize}
+
+\subsection*{6. What's next}
+\begin{itemize}
+  \item \textbf{Auto-batching GPU path:} make \code{synth\_cube\_map} chunk columns from an
+        $n_\lambda n_z$ memory budget (the on-device analogue of the mp \code{tile} fix) so it can't OOM.
+  \item \textbf{Multi-GPU:} shard columns across the 3 H100s (\code{jax.shard\_map}/\code{pmap} \emph{over
+        GPU devices} --- unlike the CPU \code{pmap} dead end, this is the right tool here). $\sim$3$\times$
+        for full-domain runs.
+  \item \textbf{I/O:} at full res the load dominates --- cache/convert the cube once, or read only the
+        needed crop.
+  \item \textbf{Response cube on GPU:} \code{vmap(jacrev(...))} through the same kernel; wire the
+        differentiable \code{synth\_cube} into the neural-field / PINN inversion loop.
+\end{itemize}
+
+\end{document}

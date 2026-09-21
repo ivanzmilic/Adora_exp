@@ -1,0 +1,31 @@
+\input{adora_preamble}
+\begin{document}
+
+\docheader{Adora PINN --- Step 1: Atmosphere Field}%
+{As-built notes \quad$\cdot$\quad Ivan Milic \quad$\cdot$\quad 2026-09-20 \quad$\cdot$\quad step 1 of pinn/plan.md}
+
+Step 1 is the atmosphere parametrization: a coordinate MLP with Gaussian Fourier encoding mapping
+$(x,y,z)\to(T,P,v_z,B_x,B_y,B_z,v_\mathrm{turb})$. Pure JAX (params a plain pytree, like
+\file{eos\_mlp/eos\_model.py}), so it composes with the JAX RT/EOS in later steps; the architecture mirrors
+the cloudtorch \code{ParameterField}. File \file{pinn/atmosphere\_field.py}; check \file{pinn/step1\_mlp.ipynb}.
+
+\textbf{Choices (agreed).} JAX + optax; Cartesian $B$ (smooth, no $|B|\!\to\!0$ azimuth degeneracy;
+\code{b\_to\_rt\_angles} gives $|B|,\gamma,\chi$ for a vertical LOS); $v_\mathrm{turb}$ free; $T$ softplus
+($>0$), $P$ in log10 (spans $\sim$8 orders), $v_z,B$ identity.
+
+\textbf{Architecture.} Anisotropic Gaussian Fourier features $[\sin,\cos](2\pi Bv)$ with per-axis bandwidth
+\code{sigmas=(2,2,6)} (more along the stratified $z$) $\to$ SiLU MLP (\code{width=192}, \code{depth=4},
+\code{n\_freq=64}; $\sim$137k weights) $\to$ 7-channel head; coordinates normalized to $[-1,1]$. The head is
+\textbf{anchored} (bias set through the inverse transforms, \code{head\_std=1e-3}) so at init the field emits a
+mid-photosphere atmosphere everywhere --- a warm start before the step-3 pretraining. (A stable
+\code{inv\_softplus}$=y+\ln(1-e^{-y})$ is required; the naive $\ln(e^{y}-1)$ overflows at $T=6000$.)
+
+\textbf{Verification (\file{step1\_mlp.ipynb}).} Shapes/ranges correct; anchor check at init
+$\langle T\rangle{=}6003$\,K, $\langle P\rangle{=}9.93{\times}10^{3}$\,Pa, $\langle v_\mathrm{turb}\rangle{=}997$\,m/s,
+$v_z,B\!\approx\!0$; and a larger-weight field shows smooth, bandwidth-limited vertical $T(z),P(z),v_z(z)$ and
+horizontal $T(x,y)$ structure.
+
+\textbf{Next.} Step 2: starting atmosphere ($128^2$ FALC clone, $z\in(-100,1000)$\,km), then pretrain (step 3).
+Files uncommitted.
+
+\end{document}

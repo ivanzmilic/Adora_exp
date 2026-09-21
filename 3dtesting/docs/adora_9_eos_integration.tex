@@ -1,0 +1,81 @@
+\input{adora_preamble}
+\begin{document}
+
+\docheader{Adora --- EOS Integration into 3D Synthesis}%
+{As-built notes \quad$\cdot$\quad Ivan Milic \quad$\cdot$\quad 2026-09-19 \quad$\cdot$\quad session summary}
+
+Wired the \file{eos\_mlp} EOS (see \file{eos\_mlp/adora\_eos\_mlp.pdf}) into the 3D synth stack: the synth
+now takes \textbf{gas pressure} \code{Pg} (or \code{rho}) per depth and the MLP supplies the previously-free
+\code{(ne, nHtot)}. The RT core is \emph{unchanged} --- every new line is tagged \code{\# eos}, and the
+legacy \code{ne/nH} path still works.
+
+\subsection*{1. Where the EOS is injected (design)}
+At the \textbf{column level, once per column, above the wavelength \code{vmap}} --- not inside
+\file{lte\_polarised\_rt}. Two reasons: (i) efficiency --- the EOS runs once per column and its
+\code{(nz,)} outputs are reused across all wavelengths; (ii) \textbf{inversion} --- the EOS sits
+\emph{inside} the jitted/traced function, so \code{jacrev}/\code{grad} of the synth gives
+$\partial\text{Stokes}/\partial P_\mathrm{gas}$ straight through the EOS by the chain rule. The fixed MLP
+is \textbf{baked into the compiled function} (closed over) by a small factory --- not threaded through
+\code{jit} (its params dict has an untraceable string field).
+
+\subsection*{2. \file{synth3d.py} (kept lean)}
+Three orthogonal axes --- input (\code{ne,nH} vs EOS \code{Pg}/\code{rho}), gradient, call style ---
+factored, instead of writing out their cross-product:
+\begin{itemize}
+  \item \code{KEYS\_PG = (T, Pg, vz, vturb, b, gb, cb)} and \code{KEYS\_RHO} --- 7-key cube interfaces
+        ($P_\mathrm{gas}$ or $\rho$ replacing \code{ne, nH}). \code{KEYS} (legacy) kept.
+  \item \code{\_finalize(cube\_fn, forward\_only)} --- one shared jit\,/\,\code{stop\_gradient} wrapper;
+        \code{synth\_cube} and \code{synth\_cube\_fwd} are now one-liners through it, over the single
+        engine \code{synth\_column}.
+  \item \code{build\_synth\_cube\_eos(eos\_params, forward\_only=False)} --- the EOS factory (a factory,
+        not a module-level \code{jit}: the params dict has an untraceable string leaf). One new physics
+        line, \code{ne, nH = eos.ne\_nhtot\_from\_pg/rho(...)} (by \code{eos\_params["mode"]}); reuses
+        \code{synth\_column} and \code{\_finalize}.
+  \item \code{synth\_cube\_map(waves, dz, cube, eos\_params=None, mode=None, ...)} --- \textbf{one}
+        dict-cube wrapper: default = legacy \code{ne/nH}; setting \code{mode}/\code{eos\_params} switches
+        to the EOS path (keys \code{KEYS\_PG}/\code{KEYS\_RHO}), caching the built fn. \file{eos\_mlp/}
+        is put on \code{sys.path} (flat sibling imports), then \code{import eos}.
+\end{itemize}
+
+\subsection*{3. \file{synth3d\_mp.py}}
+\code{synth\_cube\_mp(..., eos\_mode=None)}: \code{None} = legacy \code{ne/nH}; \code{"pg"}/\code{"rho"}
+ship \code{Pg}/\code{rho} instead. Because the EOS params are JAX arrays, each worker \textbf{builds the
+EOS forward-synth inside \code{\_init}} (after its JAX import, alongside \code{read\_kurucz}) --- never
+pickled across the spawn boundary --- and \code{\_worker} selects cube keys by mode.
+
+\subsection*{4. \file{muram\_loader.py}}
+\code{load\_muram\_cube(..., eos\_input="pg"|"rho"|"both"|"none")}: \code{"pg"} adds \code{cube["Pg"]}
+from \textbf{MURaM's own EOS pressure} (\code{eosP}, dyn/cm$^2\!\to$Pa; ideal-gas fallback
+$(n_\mathrm{H}\Sigma_A+n_e)k_BT$), \code{"rho"} adds \code{cube["rho"]}. \code{ne, nH} still emitted; this
+retires the \code{1.4\,amu} \code{nH} cheat for the synth path. \code{Pg} in \textbf{Pa}, all SI.
+
+\subsection*{5. Validation (FAL-C toy cube)}
+EOS(\code{Pg}) vs the \code{ne/nH} path: continuum $\sim$2\%, line \code{I/Ic} to \code{3e-3} (expected
+LTE-vs-FAL \code{ne} difference); \code{jax.grad} w.r.t.\ \code{Pg} \emph{through the EOS} is finite and
+non-zero; the mp path is \textbf{bit-identical} to single-device (\code{max|$\Delta$|=0}). Unchanged
+after the \S2 consolidation.
+
+\subsection*{6. How to run the 3D synthesis (after the update)}
+The EOS grids + trained MLP already exist in \file{eos\_mlp/} (rebuild once with
+\code{python generate\_grid.py --workers 16} then \code{python train\_eos.py --mode both} only if the
+\code{.npz} are missing). Then, from \file{3dtesting/}:
+\vspace{-3pt}{\footnotesize
+\begin{verbatim}
+from muram_loader import load_muram_cube        # 1. MURaM snapshot -> cube carrying Pg
+cube, dz, meta = load_muram_cube(datapath, iteration, kind="muramsub", eos_input="pg")
+from synth3d import synth_cube_map              # 2a. GPU, whole cube in one shot
+I = synth_cube_map(waves, dz, cube, mode="pg")          # -> (nx, ny, 4, nwave)
+from synth3d_mp import synth_cube_mp            # 2b. CPU pool; call under `__main__`
+I = synth_cube_mp(waves, dz, cube, nworkers=64, tile=16, eos_mode="pg")
+\end{verbatim}}\vspace{-3pt}
+Use \code{mode/eos\_mode="rho"} (+\,\code{eos\_input="rho"}) for the density head; omit them for the
+unchanged legacy \code{ne/nH} path. \code{waves} is a vacuum grid (e.g.\ \code{lw.air\_to\_vac}); large
+cubes still need column batching (GPU) or a smaller \code{tile} (CPU).
+
+\subsection*{7. What's next}
+Wire the \code{pg} head into the \textbf{inversion}: per-depth free vector
+\code{(T, Pg, vz, vturb, b, gb, cb)} (\code{ne, nH} no longer independent), response =
+\code{jacrev(build\_synth\_cube\_eos)} w.r.t.\ \code{(T, Pg, \dots)} --- $\partial I/\partial P_\mathrm{gas}$ for free.
+Optional: auto-batched GPU \code{synth\_cube\_map}, a rho-head demo. Files uncommitted.
+
+\end{document}

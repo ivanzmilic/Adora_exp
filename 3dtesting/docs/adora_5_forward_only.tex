@@ -1,0 +1,74 @@
+\input{adora_preamble}
+\begin{document}
+
+\docheader{Adora --- Forward-Only Synthesis (torch-ready)}%
+{Design note: a derivative-free 1.5D Stokes forward \quad$\cdot$\quad Ivan Milic \quad$\cdot$\quad 2026-09-01 \quad$\cdot$\quad proposal}
+
+\textbf{Goal.} A sibling of \file{synth3d.py}'s cube synth, guaranteed \emph{forward-only}: it never builds an
+autodiff tape and never materialises response functions --- cheap in memory, safe to embed inside a
+\emph{torch}-driven inversion where the gradient is supplied elsewhere.
+
+\subsection*{What ``saving the derivatives'' actually means here}
+Two distinct costs, both absent from a pure forward: \textbf{(1) the Jacobian} --- the response path
+(\code{jax.jacrev} in \file{vector\_response\_fn.py}) materialises $\partial\mathbf{I}/\partial\{\text{params}\}$
+of shape $(4,\,n_\lambda,\,8,\,n_z)$ \emph{per column}, the literal ``all the derivatives''; and \textbf{(2) the
+reverse-mode tape} --- differentiating through the DELO loop (\code{fori\_loop} in
+\file{vector\_formal\_solver.py}) retains the full $n_z$-deep Stokes trajectory plus per-layer matrices per
+column, whereas forward-only runs that loop in $O(1)$ depth memory.
+
+\textbf{Key fact:} \code{synth\_cube} is already a plain \code{@jax.jit} \emph{forward} --- a jitted program that
+is never differentiated builds \emph{no} tape (XLA frees intermediates); memory only balloons when something
+wraps it in \code{jacrev}/\code{grad}. So this is a small, explicit variant --- not a rewrite --- that makes
+non-differentiability a hard guarantee, adds a torch-friendly \code{dtype}, and fixes a clean seam for the torch backward.
+
+\subsection*{Proposed edits to \file{synth3d.py}}
+Factor the current vmap body into a private \code{\_synth\_cube}; keep \code{synth\_cube} exactly as today
+(differentiable-ready). Add one lean wrapper:
+\begin{verbatim}
+from functools import partial
+import jax.numpy as jnp
+
+@partial(jax.jit, static_argnames=("dtype",))                 # dtype must be static
+def synth_cube_fwd(adata, waves, dz, T, ne, nH, vz, vturb, b, gb, cb,
+                   dtype=jnp.float64):                          # jnp.float32 -> torch parity, 1/2 memory
+    a = [x.astype(dtype) for x in (waves, dz, T, ne, nH, vz, vturb, b, gb, cb)]
+    out = _synth_cube(adata, *a)                               # same physics as synth_cube
+    return jax.lax.stop_gradient(out)                          # <- constant to any outer autodiff: no tape kept
+\end{verbatim}
+\begin{itemize}
+  \item \code{stop\_gradient} makes the synth a \emph{constant} to any enclosing \code{grad}/torch graph ---
+        nothing is stored for a backward pass, and accidental nesting can never build a tape.
+  \item \code{dtype} (static $\Rightarrow$ no recompile churn) gives a \code{float32} path that halves working
+        memory and matches a torch pipeline; keep \code{float64} as default for reference accuracy.
+  \item \textbf{The process-parallel path is already this.} \code{synth3d\_mp.synth\_cube\_mp} only runs the
+        forward, blocks, and returns numpy --- no tape ever. Point its worker at \code{synth\_cube\_fwd} to also
+        get the \code{stop\_gradient}/\code{f32} guarantees; no other change.
+\end{itemize}
+
+\subsection*{The one real decision: how does \emph{torch} get the gradient?}
+\begin{tabular}{@{}p{2.9cm} p{7.6cm} p{4.7cm}@{}}
+\hline
+\textbf{Option} & \textbf{What it is} & \textbf{Derivative memory}\\
+\hline
+\textbf{A. Black-box} \emph{(recommended first)} & JAX forward as a constant; torch wraps it \code{no\_grad}.
+Use for training targets, validation, forward spectra. & \textbf{None.} Ships now.\\
+\textbf{B. Custom-VJP bridge} & Expose \code{jax.vjp}; a \code{torch.autograd.Function} calls the JAX forward
+(dlpack) and, in backward, one on-demand $v\!\cdot\!J$. & One cotangent $(4,n_\lambda)$ --- \emph{not} the
+full $(4,n_\lambda,8,n_z)$ Jacobian.\\
+\textbf{C. Torch reimpl.} & Re-code DELO in torch; \code{torch.utils.checkpoint} the depth loop
+(recompute in backward). JAX forward is the numerical reference. & $O(\sqrt{n_z})$ instead of $O(n_z)$.\\
+\hline
+\end{tabular}
+
+\smallskip
+\textbf{Recommendation.} Build \textbf{A} now (the wrapper above --- tiny, safe, immediately useful for
+generating spectra without OOM). Keep \code{\_synth\_cube} pure so \textbf{B} slots in later without touching the
+physics; \textbf{C} is the endgame only if the whole inversion moves into torch, where this \code{stop\_gradient}
+forward doubles as the validation oracle.
+
+\textbf{Scope.} No change to \code{synth\_cube} or the response path --- the differentiable stack stays intact;
+this note proposes only the JAX forward + the interop seam, not a torch reimplementation. If
+gradients-through-physics \emph{are} wanted later without the full Jacobian, the levers are B's on-demand VJP or
+\code{jax.checkpoint} on the DELO loop.
+
+\end{document}

@@ -1,0 +1,84 @@
+\input{adora_preamble}
+\begin{document}
+
+\docheader{Adora --- Forward-Only Synthesis, Tiling \& Memory}%
+{As-built notes \quad$\cdot$\quad Ivan Milic \quad$\cdot$\quad 2026-09-01 \quad$\cdot$\quad session summary}
+
+This session shipped the forward-only synth, reworked the parallel driver to stream progress, ran the
+first real MURaM cube, and pinned down where the (large) memory goes. Complements the proposal in
+\file{adora\_5\_forward\_only.pdf} and the CPU scaling in \file{adora\_4\_benchmark.pdf}.
+
+\subsection*{1. Forward-only synth (\code{synth\_cube\_fwd}) --- as-built}
+Added to \file{synth3d.py}: factored the vmap body into \code{\_synth\_cube}; \code{synth\_cube} is
+unchanged (differentiable-ready), and the new twin is
+\[
+\code{synth\_cube\_fwd} \;=\; \code{jax.jit(\,lambda \dots: jax.lax.stop\_gradient(\_synth\_cube(\dots)))}.
+\]
+\code{stop\_gradient} makes it a \emph{constant} to any outer torch/jax autodiff --- no tape is ever built.
+\textbf{Verified:} bit-identical to \code{synth\_cube} (max abs diff $0.0$), and \code{jax.grad} through it
+is exactly $0$ while \code{synth\_cube} still differentiates.
+\textbf{Deviation from the proposal:} the \code{dtype=float32} knob was \emph{dropped}. With \code{x64} on and
+\code{float64} constants baked into the shared kernel (\code{jnp.eye(4)} in the DELO solver, Planck consts in
+\file{lineop.py}), \code{f32} inputs promote straight back to \code{f64} --- it rounded inputs ($\sim$0.3\%)
+with \emph{no} memory win. A real \code{f32} path needs a dtype-generic kernel (deferred; out of scope for
+``don't touch the physics'').
+
+\subsection*{2. Parallel driver (\code{synth\_cube\_mp}) --- reworked}
+\file{synth3d\_mp.py} now uses a \code{spawn} \code{Pool} with an \code{initializer}: each worker pins its
+core(s), imports JAX, and reads the line list \emph{once}, storing them in a per-process dict and reusing
+them across many \textbf{tiles}. Columns are split into fixed-size tiles ($\sim$4/worker by default),
+streamed back with \code{imap\_unordered} and placed by start index, and wrapped in a \code{tqdm} bar so
+progress is visible during the run (silent fallback if tqdm is absent). Each worker runs
+\code{synth\_cube\_fwd} (mp output is plain numpy across a process boundary $\Rightarrow$ forward-only). New
+kwargs: \code{tile} (columns/task) and \code{progress}. Output bit-identical to single-device; $40\times40$
+on 32 workers $\approx$\,35\,s (spawn+compile+run), a touch faster than before (one line-list read/worker,
+warm JIT reuse). Guard footgun unchanged: callers MUST be under \code{if \_\_name\_\_=="\_\_main\_\_"}.
+
+\subsection*{3. Where the memory goes (the ``huge'' peak)}
+Inside a worker, one tile is a \emph{single} triply-nested \code{vmap} --- over \textbf{columns} (the tile),
+then \textbf{wavelength}, then \textbf{depth} --- fused into one XLA call. So the opacity/emissivity
+intermediates (\code{eta}, \code{chi}, Voigt/\code{exp} temporaries) are all live at once for the whole
+$\text{tile}\times n_\lambda\times n_z$ batch. Hence
+\[
+\text{peak RSS/worker} \;\approx\; \underbrace{\sim1\,\text{GB}}_{\text{JAX baseline}}
+   \;+\; K\cdot\text{tile}\cdot n_\lambda\cdot n_z, \qquad
+\text{aggregate} = n_\text{workers}\times(\dots).
+\]
+\textbf{Measured} on the first real cube (\file{3D\_full\_subdomain}, iter 0, \code{muramsub}, \code{skip=4}
+$\Rightarrow$ $\sim$141k columns, $n_\lambda{=}201$): the auto default \code{tile}$\,\approx\,$1100 gave
+\textbf{$\sim$17\,GB/worker}, and with 32 workers loosely in sync the tree \textbf{peaked at $\sim$540\,GB}
+of the 1006\,GB node --- spiky (dropping to $\sim$170\,GB between tiles as intermediates free). The run
+finished fine and saved a \textbf{905\,MB} Stokes cube; memory released cleanly.
+
+\smallskip
+\begin{minipage}[t]{0.54\textwidth}
+\textbf{\code{tile} is the memory lever} (peak is linear in it; total work is unchanged --- tiles just
+stream through the warm workers).
+\begin{tabular}{@{}r r l@{}}
+\hline
+\textbf{tile} & \textbf{$\sim$peak/worker} & \textbf{note}\\
+\hline
+$1100$ (auto) & \textbf{$\sim$17\,GB} & measured; $\times32\to\sim$540\,GB\\
+$128$         & $\sim$3\,GB          & projected (linear)\\
+$16$ (current)& $\sim$1.2\,GB        & \code{nworkers=128}: $\sim$150\,GB\\
+\hline
+\end{tabular}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.42\textwidth}
+\textbf{Caveat.} The old default (\code{tile}$=n_\text{px}/(4n_\text{workers})$) was tuned for bar
+granularity, not memory; it scales badly for big maps and would \textbf{OOM the node} at \code{skip=1}.
+$n_\lambda$ and $n_z$ are fixed by the physics --- \code{tile} is the only cheap dial.
+\end{minipage}
+
+\subsection*{4. How to run \& what's next}
+\begin{itemize}
+  \item \textbf{Current CLI} (\file{muram\_loader.py}): \code{load\_muram\_cube(...,skip=2)} then
+        \code{synth\_cube\_mp(waves,dz,cube,nworkers=128,tile=16)} $\to$ saves \code{/dat/milic/synthesized\_cube.npy}.
+        Small \code{tile} keeps per-worker RSS $\sim$1\,GB; pick \code{tile} from a memory budget, not pixel count.
+  \item \textbf{Recommended:} make the \emph{default} \code{tile} memory-bounded (cap from an $n_\lambda n_z$
+        budget targeting $\sim$1--2\,GB/worker) so an unattended full-res run can't blow up. Not yet done.
+  \item \textbf{Still open:} validate the loader on real data (orientation/velocity/field signs vs Lightweaver);
+        a \textbf{persistent pool} to kill the per-call cold-start for inversions; inclined rays; response cube.
+\end{itemize}
+
+\end{document}

@@ -1,0 +1,34 @@
+# adora-develop -- differentiable RT environment for Adora
+#
+# Recreate:  conda env create -f environment.yml
+#
+# Lightweaver is NOT listed below: it is a local editable install that reuses a
+# prebuilt C++/Cython extension. After creating the env, wire it in with:
+#   conda activate adora-develop
+#   pip install -e /home/milic/codes/Lightweaver      # needs a working Cython build
+# (on this machine it was registered by reusing the prebuilt cp312 .so instead.)
+
+name: adora-develop
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      # core differentiable stack (pinned per Adora README)
+      - jax==0.7.1
+      - optax==0.2.5
+      - jaxopt==0.8.5
+      - interpax==0.3.10
+      - jax_dataclasses==1.6.3
+      - numpy>=2.0
+      - scipy
+      - astropy
+      - matplotlib
+      # Lightweaver runtime deps (used by the local editable install)
+      - numba~=0.60
+      - parse
+      - specutils
+      - tqdm
+      - weno4
+      - pyyaml

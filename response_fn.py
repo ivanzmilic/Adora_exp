@@ -1,8 +1,9 @@
 import jax
-jax.config.update("jax_enable_x64", True)
+import adora_precision   # global float32/64 switch (ADORA_X64; default 64-bit)
 import jax.numpy as jnp
 from lineop import AtomicData, read_kurucz, emis_opac
-from scalar_formal_solver import nearest_fs
+from scalar_formal_solver import nearest_fs                          # previous piecewise-constant solver
+from formal_solvers.scalar_formal_solver_linear import linear_fs     # piecewise-linear solver (now used)
 
 def lte_rt(adata: AtomicData, wave, dz, temperature, ne, nhtot, vz, vturb):
     eta, chi = jax.vmap(
@@ -10,7 +11,7 @@ def lte_rt(adata: AtomicData, wave, dz, temperature, ne, nhtot, vz, vturb):
         in_axes=[None, None, 0, 0, 0, 0, 0]
     )(adata, wave, temperature, ne, nhtot, vz, vturb)
 
-    I = nearest_fs(dz, eta, chi)
+    I = linear_fs(dz, eta, chi)   # was nearest_fs; swap back to revert
     return I
 
 
@@ -86,10 +87,19 @@ if __name__ == "__main__":
             in_axes=[None, 0, None, None, None, None, None, None]
         )
     )
+    import time
+    start = time.time()
     intens = lte_rt_wave(lines, waves, dz, temperature, ne, nhtot, vz, vturb)
+    end = time.time()
+    print(f"Execution time: {end - start:.4f} seconds")
+    start = time.time()
+    intens = lte_rt_wave(lines, waves, dz, temperature, ne, nhtot, vz, vturb)
+    end = time.time()
+    print(f"Execution time: {end - start:.4f} seconds")
 
     plt.figure()
     plt.plot(waves, intens)
+    plt.savefig("spectrum_scalar.png", bbox_inches='tight', dpi=300)
 
     lte_rt_response = jax.jit(
         jax.vmap(

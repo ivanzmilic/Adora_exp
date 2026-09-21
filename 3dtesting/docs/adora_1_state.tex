@@ -1,0 +1,70 @@
+\input{adora_preamble}
+\begin{document}
+
+\docheader{Adora --- Current State of the Code}%
+{Auto-Differentiation fOr Response functions using jAx \quad$\cdot$\quad Ivan Milic \quad$\cdot$\quad 2026-08-28 \quad$\cdot$\quad 1/3}
+
+\textbf{What it is.} Adora is a proof-of-concept for \emph{differentiable} synthesis and inversion of solar
+Stokes spectra, written entirely in JAX (\code{fp64}). Because the whole forward model --- equation of
+state $\to$ opacities $\to$ formal solution --- is one differentiable function, \textbf{response functions
+and Jacobians come for free} from \code{jax.jacrev}/\code{jacfwd}, which is the central idea of the project.
+It is 1D plane-parallel, single-ray, LTE, and synthesis has been validated against \emph{Lightweaver} for the
+Fe\,\textsc{i} 630.15/630.25\,nm pair (Fig.~\ref{fig:val}).
+
+\begin{minipage}[t]{0.60\textwidth}
+\vspace{2pt}
+\subsection*{Physics stack (LTE, all differentiable)}
+\begin{itemize}
+  \item \file{contop.py} --- continuum opacity: H bound--free (5 levels, Seaton/RH Gaunt factors),
+        H$^-$ bound--free \& free--free (Gray 2021 fits), Saha H ionisation.
+  \item \file{lte\_pops.py} --- generic Saha--Boltzmann populations (demo; checked vs Lightweaver \code{nStar}).
+  \item \file{lineop.py} --- \emph{the core}. Reads Kurucz line lists $\to$ \code{AtomicData} pytree; Fe\,\textsc{i/ii/iii}
+        ionisation via Irwin (1981) partition functions; Boltzmann level populations; line
+        $\eta,\chi$ from Voigt profile, Doppler width and damping ($\gamma_{\rm rad}+\gamma_{\rm Stark}+\gamma_{\rm vdW}$);
+        LTE source function $=$ Planck. Zeeman splitting in LS-coupling builds the full polarised
+        propagation opacity ($\eta_{I,Q,U,V},\ \rho_{Q,U,V}$) and emissivity ($\varepsilon_{I,Q,U,V}$).
+  \item \file{voigt.py} --- Voigt--Faraday ($H\!+\!F$) via Humlicek w4 rational approximation; differentiable.
+\end{itemize}
+
+\subsection*{Formal solvers}
+\begin{itemize}
+  \item \file{scalar\_formal\_solver.py} --- \code{cumsum\_fs} (cumulative-$\tau$) and \code{nearest\_fs}
+        (piecewise-constant short characteristics via \code{fori\_loop}).
+  \item \file{vector\_formal\_solver.py} --- polarised DELO (modified/constant, Janett et al.\ 2017),
+        $4\times4$ propagation matrix.
+\end{itemize}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.37\textwidth}
+\vspace{0pt}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{lte_polarised.png}
+  \caption{\small Stokes $I$ and $V$ for the 630\,nm Fe\,\textsc{i} pair from Adora's polarised DELO solver
+  (solid) vs.\ Lightweaver (dashed), FALC + 500\,G at $45^\circ$. The synthesis is validated \emph{and}
+  end-to-end differentiable.}
+  \label{fig:val}
+\end{figure}
+\end{minipage}
+
+\subsection*{RT drivers, response functions and inversions}
+\begin{itemize}
+  \item \file{response\_fn.py} --- scalar \code{lte\_rt} (vmap opacities over depth $\to$ \code{nearest\_fs});
+        demonstrates analytic responses $\partial I/\partial\{T,n_e,n_{\rm H},v_z,v_{\rm turb}\}$.
+  \item \file{vector\_response\_fn.py} --- full-Stokes \code{lte\_polarised\_rt} through DELO; the validated
+        path of Fig.~\ref{fig:val} (polarised Jacobian written but currently commented for speed).
+  \item Optimisers over per-depth parameters: \file{iterate.py} (Levenberg--Marquardt),
+        \file{iterate\_adam.py} (optax / optimistic Adam), \file{iterate\_scipy.py}
+        (SciPy \code{least\_squares} TRF driven by the JIT-compiled JAX Jacobian).
+  \item \file{nodes.py} --- differentiable \textbf{node/spline parameterisation} (\code{NodeSpec}): a variable
+        number of nodes per quantity, cubic interpolation (\code{interpax}) to a depth grid (log-space for
+        densities), fed to a bounded TRF fit. This is the SIR/SNAPI-style inversion basis.
+\end{itemize}
+
+\subsection*{Properties \& gaps (relevant to the extension)}
+\textbf{Strengths:} exact analytic responses; validated synthesis; SI units
+($I$ in kW\,m$^{-2}$\,nm$^{-1}$\,sr$^{-1}$); CPU-tested, GPU-ready (needs fast \code{fp64}).
+\quad\textbf{Gaps:} only Fe partition functions; crude van der Waals broadening (Uns\"old TODO);
+single ray $\mu\!=\!1$ and 1D only; no self-consistent EOS ($n_e,n_{\rm H}$ are free, not solved from $T,P$);
+1st/2nd-order solvers only; no 3D geometry yet.
+
+\end{document}

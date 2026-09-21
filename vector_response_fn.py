@@ -1,8 +1,10 @@
+from time import time
 import jax
-jax.config.update("jax_enable_x64", True)
+import adora_precision   # global float32/64 switch (ADORA_X64; default 64-bit)
 import jax.numpy as jnp
 from lineop import AtomicData, read_kurucz, emis_opac_polarised, planck
-from vector_formal_solver import delo_constant_fs
+from vector_formal_solver import delo_constant_fs                       # previous piecewise-constant solver
+from formal_solvers.vector_formal_solver_linear import delo_linear_fs   # piecewise-linear solver (now used)
 
 def lte_polarised_rt(adata: AtomicData, wave, dz, temperature, ne, nhtot, vz, vturb, b, gamma_b, chi_b):
     eta, chi = jax.vmap(
@@ -11,7 +13,7 @@ def lte_polarised_rt(adata: AtomicData, wave, dz, temperature, ne, nhtot, vz, vt
     )(adata, wave, temperature, ne, nhtot, vz, vturb, b, gamma_b, chi_b)
 
     I_start = jnp.array([planck(wave, temperature[0]), 0.0, 0.0, 0.0])
-    I = delo_constant_fs(dz, I_start, eta, chi)
+    I = delo_linear_fs(dz, I_start, eta, chi)   # was delo_constant_fs; swap back to revert
     return I
 
 
@@ -25,9 +27,12 @@ if __name__ == "__main__":
     except:
         plt.ion()
 
+    fal = Falc82()
+    import time
+    
     lines = read_kurucz("kurucz_6301_6302.linelist")
 
-    fal = Falc82()
+   
     dz = jnp.array(
         np.concatenate(
             [
@@ -56,8 +61,12 @@ if __name__ == "__main__":
             out_axes=1,
         )
     )
+    start = time.time()
     intens = lte_rt_wave(lines, waves, dz, temperature, ne, nhtot, vz, vturb, b, gamma_b, chi_b)
-
+    end = time.time()
+    print (jax.devices())
+    print(f"Execution time: {end - start:.4f} seconds")
+    
     plt.figure()
     plt.plot(waves, intens[0] / intens[0, 0], label="I")
     plt.plot(waves, intens[3] / intens[0, 0], label="V")
@@ -80,7 +89,9 @@ if __name__ == "__main__":
     plt.plot(waves, Iquv_lw[3] / Iquv_lw[0, 0], '--', label="V Lw")
     plt.legend()
 
-    lte_polarised_rt_response = jax.jit(
+    plt.savefig("lte_polarised.png",bbox_inches='tight', dpi=300)
+
+    '''lte_polarised_rt_response = jax.jit(
         jax.vmap(
             jax.jacrev(
                 lte_polarised_rt,
@@ -90,7 +101,7 @@ if __name__ == "__main__":
             out_axes=1,
         )
     )
-    resp = lte_polarised_rt_response(lines, waves, dz, temperature, ne, nhtot, vz, vturb, b, gamma_b, chi_b)
+    resp = lte_polarised_rt_response(lines, waves, dz, temperature, ne, nhtot, vz, vturb, b, gamma_b, chi_b)'''
     # dIdT = resp[0]
     # dIdne = resp[1]
     # dIdnhtot = resp[2]

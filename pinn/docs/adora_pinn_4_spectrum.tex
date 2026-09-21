@@ -1,0 +1,29 @@
+\input{adora_preamble}
+\begin{document}
+
+\docheader{Adora PINN --- Step 4: Spectrum from the initial model}%
+{As-built notes \quad$\cdot$\quad Ivan Milic \quad$\cdot$\quad 2026-09-20 \quad$\cdot$\quad step 4 of pinn/plan.md}
+
+Step 4 synthesizes the Fe I 6301/6302 Stokes spectra from the \textbf{pretrained field}, exercising the full
+forward model that the inversion will differentiate. Files \file{pinn/rt\_forward.py},
+\file{pinn/step4\_spectrum.ipynb}.
+
+\textbf{Forward model.} Evaluate $f_\theta(x,y,z)$ on the $128\times128\times56$ grid; convert its outputs to
+RT inputs --- gas pressure $P\to$ EOS $\to n_e,n_\mathrm{H,tot}$; Cartesian $B\to(|B|,\gamma,\chi)$ for a
+vertical LOS (\code{b\_to\_rt\_angles}); $v_z,v_\mathrm{turb}$ pass through --- and run the piecewise-linear
+polarised RT via \code{synth\_cube\_map} (EOS/\code{pg} path). \code{rt\_forward.synth\_field} wraps this and
+is reused by steps 5--6.
+
+\textbf{GPU.} New jax-free helper \file{pinn/gpu.py}: \code{use\_gpu(device=None)} picks the idlest GPU
+(\code{nvidia-smi}), sets \code{CUDA\_VISIBLE\_DEVICES} and disables XLA pre-allocation (polite on the shared
+4$\times$H100 node); pass \code{device=3} to force one. Called first in the notebook, before any jax import.
+
+\textbf{Results.} Full-map synth on one H100 in \textbf{4\,s} (was 85\,s on CPU), Stokes $(128,128,4,201)$.
+$\max|V|/I_c=0$ (the model is non-magnetic, $B{=}0$); the velocity structure imprints a center-of-gravity
+Doppler pattern that recovers the input $v_z$; and the field spectrum matches a direct synth of the mock
+atmosphere to $\max|\Delta(I/I_c)|=8.3\times10^{-3}$ --- i.e.\ the pretraining accuracy --- confirming the
+field is a faithful warm start for the RT.
+
+\textbf{Next.} Step 5: a mock inversion testset from a prepared synthetic cube. Files uncommitted.
+
+\end{document}

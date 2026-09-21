@@ -1,6 +1,6 @@
 from fractions import Fraction
 import jax
-jax.config.update("jax_enable_x64", True)
+import adora_precision   # global float32/64 switch (ADORA_X64; default 64-bit)
 import jax.numpy as jnp
 import astropy.constants as const
 import astropy.units as u

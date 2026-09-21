@@ -1,0 +1,25 @@
+\input{adora_preamble}
+\begin{document}
+
+\docheader{Adora PINN --- Step 3: Pretraining (warm start)}%
+{As-built notes \quad$\cdot$\quad Ivan Milic \quad$\cdot$\quad 2026-09-20 \quad$\cdot$\quad step 3 of pinn/plan.md}
+
+Step 3 pretrains the step-1 field to the step-2 atmosphere so the PINN starts warm: a plain supervised fit
+of $f_\theta(x,y,z)$ to the stored cube (no RT yet). Files \file{pinn/pretrain.py},
+\file{pinn/step3\_pretrain.ipynb}; warm-start weights saved to
+\file{/dat/milic/adora\_pinn\_develop/pretrained\_field.npz}.
+
+\textbf{Method.} Random minibatches (8192) of the $128\times128\times56$ grid points; a per-channel balanced
+loss --- $P$ compared in $\log_{10}$, the rest scaled ($T/10^3$, $v_z/3{\cdot}10^3$, $B/0.05$,
+$v_\mathrm{turb}/10^3$); \code{optax} Adam, cosine LR $3\times10^{-3}$, 6000 steps ($\sim$3\,min CPU, with a
+tqdm progress bar). Coordinates use \code{af.grid\_coords}, which matches the cube's $(x,y,z)$ flatten order.
+
+\textbf{Result.} Loss $0.79\to1.0\times10^{-5}$. Full-grid RMS vs the target: $T$ $3.96$\,K ($\sim$0.05\%),
+$P$ $4.1\times10^{-3}$\,dex ($\sim$0.9\%), $v_z$ $14$\,m/s (of $\pm3$\,km/s), $v_\mathrm{turb}$ $4$\,m/s,
+$B\approx0$. The field reproduces the FAL-C stratification and the granulation-like $v_z$ pattern --- a clean
+warm start. The notebook shows the loss curve, field-vs-target profiles ($T,\log P,v_\mathrm{turb},v_z$), and
+$v_z$ target/field/residual maps.
+
+\textbf{Next.} Step 4: synthesize the 6301/6302 spectrum from this initial model. Files uncommitted.
+
+\end{document}

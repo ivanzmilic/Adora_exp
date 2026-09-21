@@ -1,0 +1,35 @@
+\input{adora_preamble}
+\begin{document}
+
+\docheader{Adora PINN --- Step 6: Losses \& derivative checks}%
+{As-built notes \quad$\cdot$\quad Ivan Milic \quad$\cdot$\quad 2026-09-20 \quad$\cdot$\quad step 6 of pinn/plan.md}
+
+Step 6 assembles the three inversion losses against the step-5 testset and verifies their gradients w.r.t.\
+the field params. Files \file{pinn/losses.py}, \file{pinn/step6\_losses.ipynb}.
+
+\textbf{The losses (all differentiable through field $\to$ EOS $\to$ linear RT).}
+\begin{itemize}
+  \item \code{fit\_loss} --- $\chi^2$ of synthesized Stokes vs observations on random pixels; uses
+        \code{build\_synth\_cube\_eos(...,\,forward\_only=False)} so the gradient flows params $\to$ field $\to$
+        EOS $\to$ RT $\to$ Stokes.
+  \item \code{he\_loss} --- hydrostatic equilibrium $dP/dz=-\rho g$ in \textbf{physical} units at random
+        collocation points: $dP/dz$ by autodiff of the field w.r.t.\ $z$ (with the $z_\mathrm{norm}\to z_\mathrm{phys}$
+        chain rule), $\rho=n_\mathrm{H,tot}\,\bar m\,\mathrm{amu}$ from the EOS; relative residual.
+  \item \code{boundary\_loss} --- soft $\log_{10}$ constraint on the top gas pressure ($z_\mathrm{norm}=+1$).
+\end{itemize}
+
+\textbf{Derivative check.} \code{directional\_fd} compares a central finite difference along a random
+direction to $\langle\nabla,v\rangle$: \code{rel\_err} = fit $5\times10^{-3}$, HE $2\times10^{-3}$, boundary
+$4\times10^{-4}$, and every gradient is finite. A 150-step Adam descent on the total loss reduces it
+$9.6\times10^{3}\to1.8\times10^{2}$ ($\sim$50$\times$) with Stokes $V$ emerging --- the gradients are usable.
+
+\textbf{Key fix.} The check caught a \textbf{NaN fit-gradient at $B=0$} --- the inversion's starting point ---
+from the singular Cartesian$\to(|B|,\gamma,\chi)$ map. \code{atmosphere\_field.b\_to\_rt\_angles} is now
+gradient-safe: soft-norm $\sqrt{\cdot+\epsilon^2}$ ($\epsilon{=}10^{-8}$), $\gamma=\mathrm{atan2}(b_h^\mathrm{safe},B_z)$,
+and a double-\code{where} azimuth. $|B|\cos\gamma=B_z$ is still exact, so $\partial V/\partial B_z$ stays
+correct at $B{=}0$ ($\epsilon$ is physically negligible; steps 4--5 spectra unchanged).
+
+\textbf{Note.} Here the fit pixels and collocation points are \emph{fixed} (a clean function to
+finite-difference); the real inversion (step 7) resamples them every epoch.
+
+\end{document}

@@ -1,0 +1,37 @@
+\input{adora_preamble}
+\begin{document}
+
+\docheader{Adora --- Plan B: Neural-Field Synthesis / Inversion (MLP + Fourier features)}%
+{Extension plan \quad$\cdot$\quad Ivan Milic \quad$\cdot$\quad 2026-08-28 \quad$\cdot$\quad 3/3}
+
+\textbf{Idea.} Represent the atmosphere as a coordinate-based \emph{neural field}: a small MLP
+$f_\theta(\gamma(\mathbf{x}))$ with Fourier-feature encoding $\gamma$ maps position $\mathbf{x}=(x,y,z)$ to the
+8 physical parameters. The existing differentiable RT operator maps that atmosphere to Stokes profiles, and we
+fit $\theta$ to observations --- a PINN-style / neural-field inversion that \textbf{replaces the fixed nodes of}
+\file{nodes.py} \textbf{with a continuous, resolution-independent, smoothly regularised representation}. It slots
+straight into Adora because gradients already flow spectrum $\to$ RT $\to$ atmosphere $\to \theta$, so
+\code{optax} (already in \file{iterate\_adam.py}) trains it directly.
+
+\begin{itemize}
+  \item \textbf{Encoding.} $\gamma(\mathbf{x})=[\sin(2\pi \mathbf{B}\mathbf{x}),\cos(2\pi \mathbf{B}\mathbf{x})]$ with
+        Gaussian random frequencies $\mathbf{B}$ (Tancik et al.\ 2020), tuned per axis --- $z$ needs a finer
+        bandwidth than $x,y$. This defeats the MLP "spectral bias" so sharp photospheric $T$/velocity gradients
+        are representable.
+  \item \textbf{Network \& output transforms.} Small MLP ($\sim$3--5 layers, width 64--256, SiLU/tanh) $\to$ 8
+        outputs, each passed through a physical map (softplus/exp for densities \& $v_{\rm turb}$, scaled sigmoid
+        for $T$, tanh for $v_z$, bounded $B,\gamma_B,\chi_B$) --- reuse the bounds already in \file{nodes.py} so
+        predictions stay physical.
+  \item \textbf{Loss.} Sample the field on each column's $z$-grid $\to$ \code{lte\_polarised\_rt} $\to$ Stokes;
+        minimise $\chi^2$ data misfit $+$ physics/regularisation terms (hydrostatic/EOS residual, smoothness,
+        optionally $\nabla\!\cdot\!\mathbf{B}=0$) --- the "PINN regularisation" from the README TODO.
+  \item \textbf{Training \& validation.} Adam then L-BFGS (optax), mini-batched over pixels/$\lambda$, \code{jit+vmap}.
+        Prove on a single pixel, then a 2D map (spatial coherence via shared $\theta$ is the payoff); invert a
+        synthetic FALC/MURaM cube and compare recovered atmosphere, fit quality and speed against the
+        \file{nodes.py} node inversion and the ground truth.
+  \item \textbf{Risks.} Parameter magnitudes differ by orders (normalise in/out); NN can run \code{fp32} while
+        opacities stay \code{fp64} (mixed precision); ill-posedness needs the regularisers/priors above.
+  \item \textbf{Deliverable.} \file{neural\_field.py} (encoding $+$ MLP $+$ transforms) and \file{invert\_field.py}
+        (training loop), sharing the RT forward model with Plan A.
+\end{itemize}
+
+\end{document}

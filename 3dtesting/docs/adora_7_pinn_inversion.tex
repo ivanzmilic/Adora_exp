@@ -1,0 +1,83 @@
+\input{adora_preamble}
+\begin{document}
+
+\docheader{Adora --- Handoff for PINN Spectropolarimetric Inversion}%
+{Code summary \& extension plan \quad$\cdot$\quad Ivan Milic \quad$\cdot$\quad 2026-09-18 \quad$\cdot$\quad 7}
+
+\textbf{The idea in one line.} Adora's entire forward model --- populations $\to$ opacities $\to$
+polarised formal solution --- is \emph{one differentiable JAX function} (\code{fp64}), so
+\textbf{response functions and Jacobians come for free}. A PINN inversion is simply: replace the
+fixed \emph{nodes} of \file{nodes.py} with a coordinate MLP $f_\theta(\gamma(\mathbf{x}))$ that emits
+the 8 atmospheric parameters, push it through the \emph{unchanged} forward model, and train $\theta$
+with \code{optax}. Gradients already flow Stokes $\to$ RT $\to$ atmosphere $\to\theta$.
+
+\begin{minipage}[t]{0.60\textwidth}
+\vspace{2pt}
+\subsection*{The reusable core (copy these)}
+\begin{itemize}
+  \item \file{lineop.py} --- \emph{heart}: \code{read\_kurucz}$\to$\code{AtomicData} pytree (precomputes
+        LS-coupling Zeeman); LTE line $\eta,\chi$; Fe\,\textsc{i/ii/iii} pops (Irwin 1981); Planck source.
+  \item \file{contop.py} --- continuum (H bf, H$^-$ bf/ff Gray, Saha). \file{voigt.py} --- Voigt--Faraday
+        (Humlicek w4).
+  \item \file{vector\_formal\_solver.py} --- polarised \textbf{DELO} (Janett 2017), $4\times4$ matrix.
+  \item \file{vector\_response\_fn.py} --- \code{lte\_polarised\_rt}: the one call a PINN makes
+        (validated vs.\ Lightweaver, Fig.).
+  \item Scalar-only twin: \file{response\_fn.py} + \file{scalar\_formal\_solver.py}. Data:
+        \file{kurucz\_6301\_6302.linelist}.
+\end{itemize}
+
+\subsection*{The single forward call (per $\lambda$, per column)}
+{\footnotesize\ttfamily I = lte\_polarised\_rt(adata, wave, dz, T, ne,\\
+\phantom{I = lte\_polarised\_rt(}nhtot, vz, vturb, b, gamma\_b, chi\_b)}\\
+returns $[I,Q,U,V]$; \code{vmap} over \code{wave} $\to$ profile. The \textbf{8 per-depth parameters}
+(what the network outputs) are $T,\ n_e,\ n_{\rm H},\ v_z,\ v_{\rm turb},\ B,\ \gamma_B,\ \chi_B$;
+\code{dz} is the layer spacing. Bounds/output transforms: reuse \file{nodes.py} (\code{:269--288}).
+\end{minipage}\hfill
+\begin{minipage}[t]{0.37\textwidth}
+\vspace{0pt}
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{lte_polarised.png}
+  \caption{\small Stokes $I,V$ for the 630\,nm Fe\,\textsc{i} pair from Adora's polarised DELO solver
+  (solid) vs.\ Lightweaver (dashed). The forward model is validated \emph{and} end-to-end
+  differentiable --- the property the PINN relies on.}
+  \label{fig:val}
+\end{figure}
+\end{minipage}
+
+\subsection*{Current inversion = the baseline the PINN replaces}
+\file{nodes.py} (\code{NodeSpec}) maps a flat node vector $\to$ \code{interpax} interpolation to a depth
+grid $\to$ the atmosphere tuple, fit by SciPy \code{trf} with a JIT \code{jacrev} Jacobian
+(\file{iterate\_scipy.py}); \file{iterate\_adam.py} is the \code{optax} loop --- \textbf{the template for
+the PINN trainer}. \code{reconstruct\_from\_nodes} is precisely the function a neural field supersedes.
+
+\subsection*{PINN plan (extends \file{adora\_3\_plan\_neuralfield})}
+\textbf{Encoding} $\gamma(\mathbf{x})=[\sin,\cos](2\pi\mathbf{B}\mathbf{x})$, per-axis bandwidth ($z$
+finer). \textbf{Net} 3--5 layers, width 64--256 $\to$ 8 outputs, each through a physical map
+(softplus/exp for densities \& $v_{\rm turb}$, sigmoid for $T$, tanh for $v_z$, bounded $B,\gamma_B,\chi_B$).
+\textbf{Loss} $\chi^2$ misfit $+$ regularisers (depth smoothness, hydrostatic/EOS residual, opt.\
+$\nabla\!\cdot\!\mathbf{B}=0$). \textbf{Train} Adam$\to$L-BFGS, \code{jit+vmap} over pixels/$\lambda$.
+\textbf{Prove} single pixel $\to$ 2D map (shared $\theta$ = spatial coherence, the payoff) $\to$ invert a
+synthetic FALC/MURaM cube vs.\ the node baseline. \textbf{New files:} \file{neural\_field.py},
+\file{invert\_field.py}.
+
+\subsection*{Conventions \& gotchas that must travel}
+\begin{itemize}
+  \item \textbf{fp64 mandatory} (\code{jax\_enable\_x64} before any \code{jnp}); \textbf{units} $I$ in
+        kW\,m$^{-2}$\,nm$^{-1}$\,sr$^{-1}$, $\lambda$ in nm, $B$ in Tesla, rest SI.
+  \item \textbf{Depth order:} index 0 $=$ \emph{deepest} layer; $I_{\rm start}=$ Planck$(T_0)$ deep
+        boundary; DELO integrates upward. The sampler must honour this.
+  \item \textbf{$\mu=1$ only} (no LOS projection yet); \textbf{no self-consistent EOS} --- $n_e,n_{\rm H}$
+        are \emph{free} (degenerate; the physics regularisers exist to constrain them).
+  \item \textbf{\code{lightweaver} is a build-time dep} of \code{read\_kurucz}/\file{nodes.py} (not
+        pip-installable here). For portability: call \code{read\_kurucz} once and \emph{serialise the}
+        \code{AtomicData} \emph{pytree} (plain arrays) so the runtime path drops the dependency.
+  \item \textbf{Fe only} (Irwin partition fns); line data validated only for the 630\,nm pair.
+\end{itemize}
+
+\vspace{2pt}\hrule\vspace{2pt}
+{\footnotesize Full detail (call graph, file:line map, copy list, open questions) in
+\file{3dtesting/PINN\_HANDOFF.md}. No code was run this session (reading only); Fig.~\ref{fig:val} is
+from a prior validated run.}
+
+\end{document}

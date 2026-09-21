@@ -1,0 +1,44 @@
+\input{adora_preamble}
+\begin{document}
+
+\docheader{Adora PINN --- Step 7: Prototype inversion}%
+{As-built notes \quad$\cdot$\quad Ivan Milic \quad$\cdot$\quad 2026-09-20 \quad$\cdot$\quad step 7 of pinn/plan.md}
+
+Step 7 is an end-to-end inversion of the observed testset (step 5): starting from the pretrained FAL-C field
+(warm start), optimise the field weights to fit the Stokes observations, regularised by hydrostatic
+equilibrium and the top-boundary pressure. Files \file{pinn/invert.py}, \file{pinn/step7\_inversion.ipynb};
+result saved to \file{/dat/milic/adora\_pinn\_develop/inverted\_field.npz}.
+
+\subsection*{1. Machinery}
+\code{invert.run\_inversion} runs optax Adam on the field weights with the total loss
+$w_\mathrm{fit}\,\chi^2 + w_\mathrm{he}\,\mathcal L_\mathrm{HE} + w_\mathrm{bnd}\,\mathcal L_\mathrm{bnd}$.
+\textbf{Fresh random samples every step} --- fit pixels (\code{m\_fit}), HE collocation points (\code{k\_he})
+and boundary pixels (\code{m\_bnd}) --- so the fit is stochastic over the map and HE is enforced over the
+whole domain in expectation; a separate FIXED monitor set gives clean loss curves. The forward model is
+\code{rt\_forward.synth\_field} (field $\to$ EOS $\to$ piecewise-linear RT), differentiated end-to-end.
+
+\subsection*{2. Continuable training \& scheduler}
+\code{run\_inversion} takes either a params pytree (fresh) or a \textbf{checkpoint} dict and returns
+\code{\{params, state, key, step, hist, monitor\}}; feeding it back continues training --- the Adam moments,
+RNG, LR-schedule step count and accumulated history all carry over (the notebook has a re-runnable
+``continue'' cell). The learning rate follows an \textbf{exponential-decay schedule}
+(\code{lr}$\cdot$\code{lr\_decay}$^{\,\mathrm{step}/\mathrm{lr\_transition}}$, floored) --- the standard,
+open-ended choice for PINNs. Per-Stokes fit weights are \textbf{hand-set} (\code{sigma\_stokes}, default
+$(10^{-2},5{\cdot}10^{-3},5{\cdot}10^{-3},5{\cdot}10^{-3})\times\langle I_c\rangle$ --- $Q,U,V$ a few$\times$
+tighter than $I$, not orders apart).
+
+\subsection*{3. Results (2000 steps, one H100)}
+Misfit RMS$(\text{model}-\text{obs})/\langle I_c\rangle$, initial $\to$ final:
+$I\;0.198\!\to\!0.050$, $Q\;1.2{\cdot}10^{-3}\!\to\!1.2{\cdot}10^{-3}$, $U\;1.2{\cdot}10^{-3}$,
+$V\;9.3{\cdot}10^{-3}\!\to\!8.3{\cdot}10^{-3}$. The notebook shows the loss/LR curves, obs-vs-inverted
+$I,Q,U,V$ profiles, and the recovered continuum, Doppler $v_z$ and longitudinal $B_z$ maps. Stokes $I$ (the
+thermodynamics + velocity) is recovered well; the polarisation is only partly fit.
+
+\subsection*{4. Known limitation \& next}
+The recovered maps show \textbf{stripes} and $V/Q/U$ recovery is limited --- diagnosed separately in
+\file{adora\_pinn\_7\_debug.pdf}: the random Fourier modes show through wherever the data under-constrains the
+field, and this is best cured with a \textbf{spatial-smoothness regularizer} (plus moderate $\sigma$, denser
+sampling, and regularizing/freezing weak channels). That regularizer is the natural next addition to
+\file{losses.py}. Files uncommitted.
+
+\end{document}

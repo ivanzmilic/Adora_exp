@@ -1,0 +1,31 @@
+\documentclass[10pt]{article}
+\usepackage[a4paper,margin=1.9cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\graphicspath{{../}{./}}
+\usepackage{float}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage[hidelinks]{hyperref}
+
+% --- compact layout ---
+\setlist[itemize]{leftmargin=1.35em,itemsep=1pt,topsep=2pt,parsep=0pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3pt}
+\titlespacing*{\section}{0pt}{6pt}{3pt}
+\titlespacing*{\subsection}{0pt}{4pt}{2pt}
+\titleformat{\section}{\normalfont\large\bfseries\color{RoyalBlue}}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\normalfont\bfseries}{}{0em}{}
+
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\file}[1]{\textcolor{RoyalBlue}{\texttt{\small #1}}}
+
+% \docheader{title}{subtitle}
+\newcommand{\docheader}[2]{%
+  \begin{center}
+    {\LARGE\bfseries #1}\\[2pt]
+    {\small #2}
+  \end{center}
+  \vspace{-4pt}\hrule\vspace{6pt}
+}

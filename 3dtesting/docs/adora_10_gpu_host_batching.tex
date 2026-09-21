@@ -1,0 +1,52 @@
+\input{adora_preamble}
+\begin{document}
+
+\docheader{Adora --- GPU Memory: Host-Resident Column Batching}%
+{As-built notes \quad$\cdot$\quad Ivan Milic \quad$\cdot$\quad 2026-09-20 \quad$\cdot$\quad session summary}
+
+The batched GPU synth (\code{synth\_cube\_map(..., batch=N)}, see \file{adora\_9\_eos\_integration.pdf})
+ran a $768^2$ cube but died on larger ones. Cause: \code{batch} bounded the opacity intermediate but
+\emph{not} the input residency. This note fixes that so GPU memory is bounded by \code{batch} regardless
+of cube size. Everything runs on the GPU by default (the \code{adora-develop} JAX is the CUDA build;
+\code{jax.default\_backend()=="gpu"}).
+
+\subsection*{1. The bug}
+The flatten uploaded the \textbf{whole} cube to the GPU before the chunk loop:
+{\small\begin{verbatim}
+flat = [jnp.asarray(cube[k]).reshape(-1, nz) for k in keys]   # all columns, all keys -> GPU
+\end{verbatim}}
+\code{batch} then sliced arrays that were \emph{already} on the device, so it capped the per-chunk
+opacity ($\sim$\,\code{batch}$\cdot n_\lambda\cdot n_z\cdot4\cdot4\cdot8$ B) but left the full input cube
+resident. Rough resident inputs (7 keys, $n_z{=}121$, fp64): $768^2\!\to\!\sim$4\,GB (fits),
+$1536^2\!\to\!\sim$16\,GB (does not, alongside compute + output).
+
+\subsection*{2. The fix (\file{synth3d.py}, \code{synth\_cube\_map})}
+Keep \code{flat} on the \textbf{host} (numpy); move only the current chunk to the GPU and pull its
+intensity straight back:
+{\small\begin{verbatim}
+shp  = cube["T"].shape                              # read shape without uploading anything
+flat = [np.asarray(cube[k]).reshape(-1, nz) for k in keys]      # host (numpy)
+...
+for s in starts:
+    sub = [jnp.asarray(a[s:s+batch]) for a in flat]            # host slice -> GPU (only this chunk)
+    chunks.append(np.asarray(fn(adata, waves, dz, *sub)))      # intensity -> host, frees the GPU
+I = np.concatenate(chunks, axis=0)
+\end{verbatim}}
+Peak GPU memory is now \code{batch} columns of inputs $+$ their opacity, \textbf{independent of the total
+cube size}. The same warm \code{fn} is reused (one compile; a smaller final chunk recompiles once).
+The \code{batch=None} path is unchanged: jit uploads the whole cube and returns an on-device JAX array
+(still composes with \code{grad}/\code{jit}) --- host batching is only for large forward runs.
+
+\subsection*{3. Verified}
+Batched output is \textbf{bit-identical} to the whole-cube result (\code{max|$\Delta$|=0}) for both the
+EOS (\code{pg}) and legacy \code{ne/nH} paths, including an uneven final chunk; \code{batch}$\ge$\code{npix}
+falls back to the single call. (FAL-C toy cube, forward-only.)
+
+\subsection*{4. Notes / next}
+Host RAM now holds the input cube and the concatenated fp64 output ($\sim$15\,GB at $1536^2$) --- the new
+ceiling is host memory, not the GPU. The complementary $\sim2\times$ lever is \textbf{float32}: x64 is
+currently hardcoded \code{True} in all modules; running \code{jax\_enable\_x64=False} globally would make
+the kernel constants (\code{jnp.eye(4)}, Planck) f32 too, halving memory --- not wired as a switch yet, and
+the polarised DELO solve / optical-depth exponentials need a precision check first.
+
+\end{document}

@@ -1,0 +1,35 @@
+\input{adora_preamble}
+\begin{document}
+
+\docheader{Adora PINN --- Step 2: Starting Atmosphere}%
+{As-built notes \quad$\cdot$\quad Ivan Milic \quad$\cdot$\quad 2026-09-20 \quad$\cdot$\quad step 2 of pinn/plan.md}
+
+Step 2 builds the warm-start atmosphere: a lightweaver FAL-C column resampled to a regular $z$ grid and
+cloned into a $128\times128$ map. Builder \file{pinn/make\_start\_atmosphere.py}; check
+\file{pinn/step2\_atmosphere.ipynb}. Saved (SI) to
+\file{/dat/milic/adora\_pinn\_develop/test\_atm\_falc\_128.npz}.
+
+\textbf{$z$ convention (resolved).} This lightweaver FAL-C has $z\in[0,2342]$\,km with $z=0$ at the deep
+sub-photosphere and $\tau{=}1$ near $z\approx100$\,km (\emph{not} $z{=}0$ at $\tau{=}1$). Per your call, we
+relabel $z' = z_\mathrm{lw}-100$ so the model bottom is at $z'=-100$\,km and sample FAL-C over
+$z_\mathrm{lw}\in[0,1100]$\,km --- entirely within the model, so \textbf{no extrapolation}; $\tau{=}1$ lands
+near $z'\approx0$. Grid: $z'\in[-100,1000]$\,km, $20$\,km steps, \textbf{56 points}, cloned to $128^2$.
+
+\textbf{Channels (SI, the 7 PINN outputs).} $T$[K], $P$[Pa], $v_z$[m/s], $B_{x,y,z}$[T], $v_\mathrm{turb}$[m/s].
+$T,P,v_\mathrm{turb}$ are the cloned FAL-C column ($P=(n_\mathrm{H}\Sigma_A+n_e)k_BT$, $\Sigma_A{=}1.095$); $B{=}0$
+(non-magnetic). A smooth \textbf{velocity structure} is added so $v_z\neq0$:
+$v_z = 3\,\text{km/s}\times\cos(2\pi\,3x)\cos(2\pi\,2y)\times e^{-(z'/400\,\text{km})^2}$ --- a granulation-like
+horizontal pattern with a photospheric envelope, giving the field genuine $(x,y,z)$ structure to fit in step 3.
+Reference $n_e,n_\mathrm{H,tot}$ are also stored (1-D) for cross-checking the EOS, which will supply
+$n_e,n_\mathrm{H,tot}$ from $(T,P)$ downstream.
+
+\textbf{Profile (sanity).} Standard FAL-C shape: $T=4502$--$9400$\,K with the temperature minimum at
+$z'\approx540$\,km; $P$ monotonic $3.75$--$1.94\times10^{4}$\,Pa; $\tau{=}1$ point ($z'{\approx}0$) at
+$T\approx6600$\,K. Only $v_z$ varies horizontally ($\pm3$\,km/s); $T,P,v_\mathrm{turb},B$ are cloned
+(std across $x,y=0$).
+
+\textbf{Notes.} \file{/data/milic} did not exist, so the file went to your established \file{/dat/milic}. The
+cube is $\sim$51\,MB (56$\times$128$\times$128, 7 channels). \textbf{Next:} step 3 --- pretrain the
+atmosphere field (step 1) to this cube for a warm start. Files uncommitted.
+
+\end{document}

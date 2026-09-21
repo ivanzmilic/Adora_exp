@@ -1,0 +1,30 @@
+\input{adora_preamble}
+\begin{document}
+
+\docheader{Adora --- Plan A: Synthesising Spectra from 3D Cubes}%
+{Extension plan \quad$\cdot$\quad Ivan Milic \quad$\cdot$\quad 2026-08-28 \quad$\cdot$\quad 2/3}
+
+\textbf{Goal.} Feed a 3D cube of physical parameters $(n_x,n_y,n_z)$ ---
+$T,n_e,n_{\rm H},v_z,v_{\rm turb},B,\gamma_B,\chi_B$ --- and produce a Stokes cube
+$(n_x,n_y,4,n_\lambda)$. \textbf{Strategy: start 1.5D (column-by-column vertical rays)}, since the RT
+is already 1D along $z$ --- this is the cheap, high-value first step; true 3D (lateral) transfer is a
+separate, larger effort deferred to v2.
+
+\begin{itemize}
+  \item \textbf{Ingestion.} Loader for snapshots (MURaM/Bifrost) $\to$ the 8 atmospheric arrays per
+        column, in the code's units and top-down ordering; per-column geometric $\mathrm{d}z$ (or a common
+        grid). Optionally resample onto a $\log\tau$ grid for accuracy near line-forming heights.
+  \item \textbf{Vectorisation.} One column is exactly today's \code{lte\_polarised\_rt} (already vmapped over
+        $\lambda$). Wrap in nested \code{jax.vmap} over $(x,y)$ $\Rightarrow$ batched Stokes cube; \code{jit} the
+        per-column$\times$per-$\lambda$ kernel. Tile columns to bound memory; \code{shard\_map}/\code{pmap} across GPUs.
+        Precompute \code{AtomicData} once; stream output to \code{zarr}/\code{npy}.
+  \item \textbf{Physics upgrades needed for real cubes.} (i) EOS to get $n_e,n_{\rm HI}$ consistently when cubes
+        give only $(T,\rho)$ or $(T,P)$; (ii) more elements' partition functions; (iii) optional inclined rays
+        $\mu<1$: project $v_z$ and $\mathbf{B}$ onto the LOS and integrate along the slanted path (note: the
+        polarised opacity currently assumes $\mu_z=1$ and must be generalised).
+  \item \textbf{Deliverable \& validation.} A \file{synth3d.py} (cube $+$ line list $+\ \lambda$-grid $\to$ Stokes cube,
+        optional response cube via \code{vmap(jacrev)}); spot-check columns against RH/Lightweaver (continuum,
+        line depths, $V$ amplitude).
+\end{itemize}
+
+\end{document}
