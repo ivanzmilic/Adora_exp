@@ -29,6 +29,11 @@ Z_RANGE_M = (1000.0 - (-100.0)) * 1.0e3   # z' span [m]; z_norm in [-1,1] maps o
 DZDN = Z_RANGE_M / 2.0             # d z_phys / d z_norm  [m per unit z_norm]
 NX = NY = 128
 
+# per-channel scales for the smoothness normalization = the field's own head sensitivities
+# (T[K], P[log10 dex], vz[m/s], B[T], vturb[m/s]). Fixed constants, all nonzero -> the horizontal-gradient
+# penalty is dimensionless, comparable across channels, and never divides by a near-zero quantity.
+SMOOTH_SCALE = jnp.asarray([af.DEFAULT_SCALE[c] for c in af.CHANNELS])
+
 
 def make_synth(eos_params):
     """Grad-ready pixel synth fn: (adata, waves, dz, T, Pg, vz, vturb, b, gb, cb) -> (npix,4,nwave)."""
@@ -77,6 +82,20 @@ def boundary_loss(params, ix, iy, P_top):
     coords = jnp.stack([xn, yn, jnp.ones_like(xn)], axis=-1)
     P = af.forward(params, coords)["P"]
     return jnp.mean((jnp.log10(P) - jnp.log10(P_top)) ** 2)
+
+
+def smooth_loss(params, colloc, w_ch=None):
+    """Horizontal (x,y) smoothness of the field at collocation points (K,3).
+    Penalizes (df/dx)^2 + (df/dy)^2 per channel on the PRE-TRANSFORM outputs af._raw -- so P is smoothed
+    in log10 (depth-unbiased) and T, vz, B, vturb in their physical units -- each normalized by the fixed
+    SMOOTH_SCALE so the per-channel terms are dimensionless and comparable. Only the in-layer (x,y)
+    derivatives enter, so the vertical (z) stratification is untouched: this damps the Fourier-feature
+    stripes without flattening the atmosphere. w_ch: optional per-channel weights (7,); None -> equal."""
+    raw1 = lambda c: af._raw(params, c[None, :])[0]                    # (7,) pre-transform outputs at a point
+    J = jax.vmap(jax.jacfwd(raw1))(colloc)                            # (K,7,3); forward-mode (d_in=3 < 7)
+    gxy = J[..., :2] / SMOOTH_SCALE[None, :, None]                     # normalized in-layer derivs (K,7,2)
+    per_ch = jnp.mean(gxy[..., 0] ** 2 + gxy[..., 1] ** 2, axis=0)     # (7,) mean over collocation points
+    return jnp.mean(per_ch) if w_ch is None else jnp.sum(jnp.asarray(w_ch) * per_ch)
 
 
 # --------------------------------------------------------------- gradient check

@@ -52,17 +52,23 @@ def _anchor_pre(kind, value):
     return jnp.asarray(value)                       # identity
 
 
-def init_params(key, d_in=3, n_freq=64, sigmas=(12.0, 12.0, 8.0),
-                width=192, depth=4, anchor=None, scale=None, head_std=1e-3):
+def init_params(key, d_in=3, n_freq=128, sigmas=(2.0, 2.0, 2.0),
+                width=128, depth=4, anchor=None, scale=None, head_std=1e-3):
     """Initialise the field's params pytree.
 
     sigmas : per-axis Fourier bandwidth (x, y, z); z is the stratified axis, so it gets more.
     anchor : dict of the atmosphere the untrained field emits everywhere (default mid-photosphere).
     scale  : dict of per-channel head sensitivity (physical units per unit pre-activation).
     """
+
     anchor = {**DEFAULT_ANCHOR, **(anchor or {})}
     scale  = {**DEFAULT_SCALE,  **(scale or {})}
     keys = jax.random.split(key, depth + 2)
+
+    # One would ideally like to know the total number of parameters to compare it against the equivalent computational grid:
+    
+
+    
 
     # fixed anisotropic Gaussian Fourier projection: gamma(v) = [sin(2pi B v), cos(2pi B v)]
     B = jax.random.normal(keys[0], (n_freq, d_in)) * jnp.asarray(sigmas)[None, :]
@@ -85,6 +91,7 @@ def init_params(key, d_in=3, n_freq=64, sigmas=(12.0, 12.0, 8.0),
 
 def _raw(params, coords):
     """Pre-activation head output (..., 7) for normalized coords (..., 3) in [-1, 1]."""
+
     proj = 2.0 * jnp.pi * (coords @ params["B"].T)
     h = jnp.concatenate([jnp.sin(proj), jnp.cos(proj)], axis=-1)
     for W, b in params["layers"]:
